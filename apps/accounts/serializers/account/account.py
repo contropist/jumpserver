@@ -31,7 +31,9 @@ class AccountCreateUpdateSerializerMixin(serializers.Serializer):
         default=False, label=_("Push now"), write_only=True
     )
     params = serializers.JSONField(
-        decoder=None, encoder=None, required=False, style={'base_template': 'textarea.html'}
+        decoder=None, encoder=None, required=False,
+        style={'base_template': 'textarea.html'},
+        label=_('Params'),
     )
     on_invalid = LabeledChoiceField(
         choices=AccountInvalidPolicy.choices, default=AccountInvalidPolicy.ERROR,
@@ -79,18 +81,28 @@ class AccountCreateUpdateSerializerMixin(serializers.Serializer):
 
     @staticmethod
     def get_template_attr_for_account(template):
-        # Set initial data from template
         field_names = [
-            'name', 'username', 'secret',
-            'secret_type', 'privileged', 'is_active'
+            'name', 'username',
+            'secret_type', 'secret',
+            'privileged', 'is_active'
         ]
+
+        field_map = {
+            'push_params': 'params',
+            'auto_push': 'push_now'
+        }
+
+        field_names.extend(field_map.keys())
 
         attrs = {}
         for name in field_names:
             value = getattr(template, name, None)
             if value is None:
                 continue
-            attrs[name] = value
+
+            attr_name = field_map.get(name, name)
+            attrs[attr_name] = value
+
         attrs['secret'] = template.get_secret()
         return attrs
 
@@ -166,14 +178,15 @@ class AccountCreateUpdateSerializerMixin(serializers.Serializer):
             instance.save()
             return instance, 'updated'
         else:
-            raise serializers.ValidationError('Account already exists')
+            raise serializers.ValidationError(_('Account already exists'))
 
     def create(self, validated_data):
         push_now = validated_data.pop('push_now', None)
         params = validated_data.pop('params', None)
         self.clean_auth_fields(validated_data)
         instance, stat = self.do_create(validated_data)
-        self.push_account_if_need(instance, push_now, params, stat)
+        if instance.source == Source.LOCAL:
+            self.push_account_if_need(instance, push_now, params, stat)
         return instance
 
     def update(self, instance, validated_data):
@@ -234,6 +247,7 @@ class AccountSerializer(AccountCreateUpdateSerializerMixin, BaseAccountSerialize
             'name': {'required': False},
             'source_id': {'required': False, 'allow_null': True},
         }
+        fields_unimport_template = ['params']
 
     @classmethod
     def setup_eager_loading(cls, queryset):
@@ -275,8 +289,8 @@ class AssetAccountBulkSerializer(
         fields = [
             'name', 'username', 'secret', 'secret_type', 'passphrase',
             'privileged', 'is_active', 'comment', 'template',
-            'on_invalid', 'push_now', 'assets', 'su_from_username',
-            'source', 'source_id',
+            'on_invalid', 'push_now', 'params', 'assets',
+            'su_from_username', 'source', 'source_id',
         ]
         extra_kwargs = {
             'name': {'required': False},
@@ -371,7 +385,7 @@ class AssetAccountBulkSerializer(
 
         _results = {}
         for asset in assets:
-            if asset not in secret_type_supports:
+            if asset not in secret_type_supports and asset.category != Category.CUSTOM:
                 _results[asset] = {
                     'error': _('Asset does not support this secret type: %s') % secret_type,
                     'state': 'error',
@@ -414,16 +428,23 @@ class AssetAccountBulkSerializer(
         return results
 
     @staticmethod
-    def push_accounts_if_need(results, push_now):
+    def push_accounts_if_need(results, push_now, params):
         if not push_now:
             return
-        accounts = [str(v['instance']) for v in results if v.get('instance')]
-        push_accounts_to_assets_task.delay(accounts)
+
+        account_ids = [v['instance'] for v in results if v.get('instance')]
+        accounts = Account.objects.filter(id__in=account_ids, source=Source.LOCAL)
+        if not accounts.exists():
+            return
+
+        account_ids = [str(_id) for _id in accounts.values_list('id', flat=True)]
+        push_accounts_to_assets_task.delay(account_ids, params)
 
     def create(self, validated_data):
+        params = validated_data.pop('params', None)
         push_now = validated_data.pop('push_now', False)
         results = self.perform_bulk_create(validated_data)
-        self.push_accounts_if_need(results, push_now)
+        self.push_accounts_if_need(results, push_now, params)
         for res in results:
             res['asset'] = str(res['asset'])
         return results

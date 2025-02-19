@@ -8,8 +8,7 @@ from rest_framework import serializers
 from rest_framework.fields import ChoiceField, empty
 
 from common.db.fields import TreeChoices, JSONManyToManyField as ModelJSONManyToManyField
-from common.local import add_encrypted_field_set
-from common.utils import decrypt_password
+from common.utils import decrypt_password, is_uuid
 
 __all__ = [
     "ReadableHiddenField",
@@ -47,9 +46,7 @@ class EncryptedField(serializers.CharField):
         if write_only is None:
             write_only = True
         kwargs["write_only"] = write_only
-        encrypted_key = kwargs.pop('encrypted_key', None)
         super().__init__(**kwargs)
-        add_encrypted_field_set(encrypted_key or self.label)
 
     def to_internal_value(self, value):
         value = super().to_internal_value(value)
@@ -110,20 +107,36 @@ class LabelRelatedField(serializers.RelatedField):
             kwargs["queryset"] = queryset
         super().__init__(**kwargs)
 
+    def to_file_representation(self, value):
+        if value is None:
+            return value
+        return "{}:{}".format(value.get('name'), value.get('value'))
+
     def to_representation(self, value):
         if value is None:
             return value
-        return str(value.label)
+        label = value.label
+        if not label:
+            return None
+        return {'id': label.id, 'name': label.name, 'value': label.value, 'color': label.color}
 
     def to_internal_value(self, data):
         from labels.models import LabeledResource, Label
         if data is None:
             return data
-        if isinstance(data, dict):
+        if isinstance(data, dict) and (data.get("id") or data.get("pk")):
             pk = data.get("id") or data.get("pk")
             label = Label.objects.get(pk=pk)
+        elif is_uuid(data):
+            label = Label.objects.get(pk=data)
         else:
-            k, v = data.split(":", 1)
+            if isinstance(data, dict):
+                k = data.get("name")
+                v = data.get("value")
+            elif isinstance(data, str) and ":" in data:
+                k, v = [x.strip() for x in data.split(":", 1)]
+            else:
+                raise serializers.ValidationError(_("Invalid data type"))
             label, __ = Label.objects.get_or_create(name=k, value=v, defaults={'name': k, 'value': v})
         return LabeledResource(label=label)
 
@@ -251,21 +264,21 @@ class PhoneField(serializers.CharField):
                 data = '+{}{}'.format(code, phone)
             else:
                 data = phone
-        try:
-            phone = phonenumbers.parse(data, 'CN')
-            data = '+{}{}'.format(phone.country_code, phone.national_number)
-        except phonenumbers.NumberParseException:
-            data = '+86{}'.format(data)
+        if data:
+            try:
+                phone = phonenumbers.parse(data, 'CN')
+                data = '+{}{}'.format(phone.country_code, phone.national_number)
+            except phonenumbers.NumberParseException:
+                data = '+86{}'.format(data)
 
         return super().to_internal_value(data)
 
     def to_representation(self, value):
-        if value:
-            try:
-                phone = phonenumbers.parse(value, 'CN')
-                value = {'code': '+%s' % phone.country_code, 'phone': phone.national_number}
-            except phonenumbers.NumberParseException:
-                value = {'code': '+86', 'phone': value}
+        try:
+            phone = phonenumbers.parse(value, 'CN')
+            value = {'code': '+%s' % phone.country_code, 'phone': phone.national_number}
+        except phonenumbers.NumberParseException:
+            value = {'code': '+86', 'phone': value}
         return value
 
 

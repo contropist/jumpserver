@@ -16,6 +16,7 @@ from common.storage.ftp_file import FTPFileStorageHandler
 from common.utils import get_log_keep_day, get_logger
 from ops.celery.decorator import register_as_period_task
 from ops.models import CeleryTaskExecution
+from orgs.utils import tmp_to_root_org
 from terminal.backends import server_replay_storage
 from terminal.models import Session, Command
 from .models import UserLoginLog, OperateLog, FTPLog, ActivityLog, PasswordChangeLog
@@ -92,6 +93,22 @@ def batch_delete(queryset, batch_size=3000):
             model.objects.filter(id__in=list(pks)).delete()
 
 
+def remove_files_by_days(root_path, days, file_types=None):
+    if file_types is None:
+        file_types = ['.json', '.tar', '.gz', '.mp4']
+    need_rm_files = []
+    expire_date = timezone.now() - timezone.timedelta(days=days)
+    timestamp = expire_date.timestamp()
+    for root, dirs, files in os.walk(root_path):
+        for file in files:
+            if any(file.endswith(file_type) for file_type in file_types):
+                file_path = os.path.join(root, file)
+                if os.path.getmtime(file_path) <= timestamp:
+                    need_rm_files.append(file_path)
+    for file in need_rm_files:
+        os.remove(file)
+
+
 def clean_expired_session_period():
     logger.info("Start clean expired session record, commands and replay")
     days = get_log_keep_day('TERMINAL_SESSION_KEEP_DURATION')
@@ -105,29 +122,41 @@ def clean_expired_session_period():
     logger.info("Clean session item done")
     batch_delete(expired_commands)
     logger.info("Clean session command done")
-    command = "find %s -mtime +%s \\( -name '*.json' -o -name '*.tar' -o -name '*.gz' \\) -exec rm -f {} \\;" % (
-        replay_dir, days
-    )
-    subprocess.call(command, shell=True)
+    remove_files_by_days(replay_dir, days)
     command = "find %s -type d -empty -delete;" % replay_dir
     subprocess.call(command, shell=True)
     logger.info("Clean session replay done")
 
 
-@shared_task(verbose_name=_('Clean audits session task log'))
+@shared_task(
+    verbose_name=_('Clean audits session task log'),
+    description=_(
+        """Since the system generates login logs, operation logs, file upload logs, activity 
+        logs, Celery execution logs, session recordings, command records, and password change 
+        logs, it will perform cleanup of records that exceed the time limit according to the 
+        'Tasks - Regular clean-up' in the system settings at 2 a.m daily"""
+    )
+)
 @register_as_period_task(crontab=CRONTAB_AT_AM_TWO)
 def clean_audits_log_period():
     print("Start clean audit session task log")
-    clean_login_log_period()
-    clean_operation_log_period()
-    clean_ftp_log_period()
-    clean_activity_log_period()
-    clean_celery_tasks_period()
-    clean_expired_session_period()
-    clean_password_change_log_period()
+    with tmp_to_root_org():
+        clean_login_log_period()
+        clean_operation_log_period()
+        clean_ftp_log_period()
+        clean_activity_log_period()
+        clean_celery_tasks_period()
+        clean_expired_session_period()
+        clean_password_change_log_period()
 
 
-@shared_task(verbose_name=_('Upload FTP file to external storage'))
+@shared_task(
+    verbose_name=_('Upload FTP file to external storage'),
+    description=_(
+        """If SERVER_REPLAY_STORAGE is configured, files uploaded through file management will be 
+        synchronized to external storage"""
+    )
+)
 def upload_ftp_file_to_external_storage(ftp_log_id, file_name):
     logger.info(f'Start upload FTP file record to external storage: {ftp_log_id} - {file_name}')
     ftp_log = FTPLog.objects.filter(id=ftp_log_id).first()

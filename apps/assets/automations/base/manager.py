@@ -37,7 +37,7 @@ class SSHTunnelManager:
         info = self.file_to_json(runner.inventory)
         servers, not_valid = [], []
         for k, host in info['all']['hosts'].items():
-            jms_asset, jms_gateway = host.get('jms_asset'), host.get('gateway')
+            jms_asset, jms_gateway = host.get('jms_asset'), host.get('jms_gateway')
             if not jms_gateway:
                 continue
             try:
@@ -113,11 +113,7 @@ class BasePlaybookManager:
         if not data:
             data = automation_params.get(method_id, {})
         params = serializer(data).data
-        return {
-            field_name: automation_params.get(field_name, '')
-            if not params[field_name] else params[field_name]
-            for field_name in params
-        }
+        return params
 
     @property
     def platform_automation_methods(self):
@@ -174,6 +170,7 @@ class BasePlaybookManager:
             result = self.write_cert_to_file(
                 os.path.join(cert_dir, f), specific.get(f)
             )
+            os.chmod(result, 0o600)
             host['jms_asset']['secret_info'][f] = result
         return host
 
@@ -300,12 +297,16 @@ class BasePlaybookManager:
             for host in hosts:
                 result = cb.host_results.get(host)
                 if state == 'ok':
-                    self.on_host_success(host, result)
+                    self.on_host_success(host, result.get('ok', ''))
                 elif state == 'skipped':
                     pass
                 else:
                     error = hosts.get(host)
-                    self.on_host_error(host, error, result)
+                    self.on_host_error(
+                        host, error,
+                        result.get('failures', '')
+                        or result.get('dark', '')
+                    )
 
     def on_runner_failed(self, runner, e):
         print("Runner failed: {} {}".format(e, self))
@@ -320,19 +321,19 @@ class BasePlaybookManager:
         shutil.rmtree(self.runtime_dir, ignore_errors=True)
 
     def run(self, *args, **kwargs):
-        print(">>> 任务准备阶段\n")
+        print(_(">>> Task preparation phase"), end="\n")
         runners = self.get_runners()
         if len(runners) > 1:
-            print("### 分次执行任务, 总共 {}\n".format(len(runners)))
+            print(_(">>> Executing tasks in batches, total {runner_count}").format(runner_count=len(runners)))
         elif len(runners) == 1:
-            print(">>> 开始执行任务\n")
+            print(_(">>> Start executing tasks"))
         else:
-            print("### 没有需要执行的任务\n")
+            print(_(">>> No tasks need to be executed"), end="\n")
 
         self.execution.date_start = timezone.now()
         for i, runner in enumerate(runners, start=1):
             if len(runners) > 1:
-                print(">>> 开始执行第 {} 批任务".format(i))
+                print(_(">>> Begin executing batch {index} of tasks").format(index=i))
             ssh_tunnel = SSHTunnelManager()
             ssh_tunnel.local_gateway_prepare(runner)
             try:

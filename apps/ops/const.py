@@ -1,5 +1,5 @@
 from django.db import models
-from django.utils.translation import gettext_lazy as _
+from django.utils.translation import gettext_lazy as _, pgettext_lazy
 
 
 class StrategyChoice(models.TextChoices):
@@ -41,8 +41,8 @@ class Types(models.TextChoices):
 
 
 class RunasPolicies(models.TextChoices):
-    privileged_only = 'privileged_only', _('Privileged Only')
-    privileged_first = 'privileged_first', _('Privileged First')
+    privileged_only = 'privileged_only', _('Privileged only')
+    privileged_first = 'privileged_first', _('Privileged first')
     skip = 'skip', _('Skip')
 
 
@@ -78,3 +78,15 @@ class JobStatus(models.TextChoices):
 
 # celery 日志完成之后，写入的魔法字符，作为结束标记
 CELERY_LOG_MAGIC_MARK = b'\x00\x00\x00\x00\x00'
+
+COMMAND_EXECUTION_DISABLED = _('Command execution disabled')
+
+
+class Scope(models.TextChoices):
+    public = 'public', pgettext_lazy("scope", 'Public')
+    private = 'private', _('Private')
+
+
+class FieldType(models.TextChoices):
+    text = 'text', _('Text')
+    select = 'select', _('Select')

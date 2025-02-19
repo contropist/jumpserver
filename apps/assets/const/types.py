@@ -3,6 +3,7 @@ from collections import defaultdict
 from copy import deepcopy
 
 from django.conf import settings
+from django.utils.functional import lazy
 from django.utils.translation import gettext as _
 
 from common.db.models import ChoicesMixin
@@ -29,14 +30,14 @@ class AllTypes(ChoicesMixin):
 
     @classmethod
     def choices(cls):
+        return lazy(cls.get_choices, list)()
+
+    @classmethod
+    def get_choices(cls):
         choices = []
         for tp in cls.includes:
             choices.extend(tp.get_choices())
         return choices
-
-    @classmethod
-    def get_choices(cls):
-        return cls.choices()
 
     @classmethod
     def filter_choices(cls, category):
@@ -166,23 +167,23 @@ class AllTypes(ChoicesMixin):
 
     @classmethod
     def category_types(cls):
-        return (
+        types = [
             (Category.HOST, HostTypes),
             (Category.DEVICE, DeviceTypes),
             (Category.DATABASE, DatabaseTypes),
-            (Category.CLOUD, CloudTypes),
             (Category.WEB, WebTypes),
-            (Category.GPT, GPTTypes),
-            (Category.CUSTOM, CustomTypes),
-        )
+            (Category.CLOUD, CloudTypes),
+            (Category.CUSTOM, CustomTypes)
+        ]
+        return types
 
     @classmethod
     def get_types(cls, exclude_custom=False):
         choices = []
 
         for name, tp in dict(cls.category_types()).items():
-            if name == Category.CUSTOM and exclude_custom:
-                continue
+            # if name == Category.CUSTOM and exclude_custom:
+            #     continue
             choices.extend(tp.get_types())
         return choices
 
@@ -331,11 +332,13 @@ class AllTypes(ChoicesMixin):
         return data
 
     @classmethod
-    def create_or_update_by_platform_data(cls, platform_data, platform_cls=None):
+    def create_or_update_by_platform_data(cls, platform_data, platform_cls=None, automation_cls=None):
         # 不直接用 Platform 是因为可能在 migrations 中使用
-        from assets.models import Platform
+        from assets.models import Platform, PlatformAutomation
         if platform_cls is None:
             platform_cls = Platform
+        if automation_cls is None:
+            automation_cls = PlatformAutomation
 
         automation_data = platform_data.pop('automation', {})
         protocols_data = platform_data.pop('protocols', [])
@@ -344,12 +347,18 @@ class AllTypes(ChoicesMixin):
         platform, created = platform_cls.objects.update_or_create(
             defaults=platform_data, name=name
         )
-        if not platform.automation:
-            automation = platform_cls.automation.field.related_model.objects.create()
+
+        try:
+            automation = platform.automation
+        except:
+            automation = None
+
+        if not automation:
+            automation = automation_cls.objects.create()
             platform.automation = automation
             platform.save()
         else:
-            automation = platform.automation
+            automation = automation
         for k, v in automation_data.items():
             setattr(automation, k, v)
         automation.save()

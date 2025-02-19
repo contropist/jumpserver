@@ -54,11 +54,34 @@ class ChangeSecretAutomationSerializer(AuthValidateMixin, BaseAutomationSerializ
             'ssh_key_change_strategy', 'passphrase', 'recipients', 'params'
         ]
         extra_kwargs = {**BaseAutomationSerializer.Meta.extra_kwargs, **{
-            'accounts': {'required': True},
+            'accounts': {'required': True, 'help_text': _('Please enter your account username')},
             'recipients': {'label': _('Recipient'), 'help_text': _(
                 "Currently only mail sending is supported"
             )},
+            'params': {'help_text': _(
+                "Secret parameter settings, currently only effective for assets of the host type."
+            )},
         }}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.set_ssh_key_change_strategy_choices()
+
+    def set_ssh_key_change_strategy_choices(self):
+        ssh_key_change_strategy = self.fields.get("ssh_key_change_strategy")
+        if not ssh_key_change_strategy:
+            return
+        ssh_key_change_strategy._choices.pop(SSHKeyStrategy.add, None)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        ssh_strategy_value = data.get('ssh_key_change_strategy', {}).get('value')
+        if ssh_strategy_value == SSHKeyStrategy.add:
+            data['ssh_key_change_strategy'] = {
+                'label': SSHKeyStrategy.set_jms.label,
+                'value': SSHKeyStrategy.set_jms.value
+            }
+        return data
 
     @property
     def model_type(self):
@@ -71,19 +94,6 @@ class ChangeSecretAutomationSerializer(AuthValidateMixin, BaseAutomationSerializ
 
         if self.initial_data.get('secret_strategy') == SecretStrategy.custom:
             return password_rules
-
-        length = password_rules.get('length')
-
-        try:
-            length = int(length)
-        except Exception as e:
-            logger.error(e)
-            msg = _("* Please enter the correct password length")
-            raise serializers.ValidationError(msg)
-
-        if length < 6 or length > 30:
-            msg = _('* Password length range 6-30 bits')
-            raise serializers.ValidationError(msg)
 
         return password_rules
 

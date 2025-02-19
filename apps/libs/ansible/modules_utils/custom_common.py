@@ -121,7 +121,7 @@ class SSHClient:
 
     def local_gateway_prepare(self):
         gateway_args = self.module.params['gateway_args'] or ''
-        pattern = r"(?:sshpass -p ([\w@]+))?\s*ssh -o Port=(\d+)\s+-o StrictHostKeyChecking=no\s+([\w@]+)@([" \
+        pattern = r"(?:sshpass -p ([^ ]+))?\s*ssh -o Port=(\d+)\s+-o StrictHostKeyChecking=no\s+([\w@]+)@([" \
                   r"\d.]+)\s+-W %h:%p -q(?: -i (.+))?'"
         match = re.search(pattern, gateway_args)
 
@@ -151,10 +151,8 @@ class SSHClient:
         gateway_server = self.gateway_server
         if not gateway_server:
             return
-        try:
-            gateway_server.stop()
-        except Exception:
-            pass
+
+        gateway_server.stop()
 
     def before_runner_start(self):
         self.local_gateway_prepare()

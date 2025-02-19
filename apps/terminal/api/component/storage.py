@@ -2,16 +2,16 @@
 #
 
 from django.utils.translation import gettext_lazy as _
-from django_filters import utils
 from django_filters import rest_framework as drf_filters
+from django_filters import utils
 from rest_framework import viewsets, generics, status
 from rest_framework.decorators import action
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from common.api.mixin import CommonApiMixin
 from common.const.http import GET
 from common.drf.filters import BaseFilterSet
-from common.api.mixin import CommonApiMixin
 from terminal import const
 from terminal.filters import CommandStorageFilter, CommandFilter, CommandFilterForStorageTree
 from terminal.models import CommandStorage, ReplayStorage
@@ -30,8 +30,10 @@ class BaseStorageViewSetMixin(CommonApiMixin):
         if instance.type_null_or_server or instance.is_default:
             data = {'msg': _('Deleting the default storage is not allowed')}
             return Response(data=data, status=status.HTTP_400_BAD_REQUEST)
-        if instance.is_use():
-            data = {'msg': _('Cannot delete storage that is being used')}
+        used_by = instance.used_by()
+        if used_by:
+            names = ', '.join(list(used_by.values_list('name', flat=True)))
+            data = {'msg': _('Cannot delete storage that is being used: {}').format(names)}
             return Response(data=data, status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)
 
@@ -83,7 +85,7 @@ class CommandStorageViewSet(BaseStorageViewSetMixin, viewsets.ModelViewSet):
         nodes = [
                     {
                         'id': storage.id,
-                        'name': f'{storage.name}({storage.type})({command_count})',
+                        'name': f'{storage.name}({storage.type}) ({command_count})',
                         'title': f'{storage.name}({storage.type})',
                         'pId': 'root',
                         'isParent': False,

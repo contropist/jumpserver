@@ -5,7 +5,6 @@ import re
 from collections import defaultdict
 
 from django.utils.translation import gettext as _
-from assets.const.category import Category
 
 __all__ = ['JMSInventory']
 
@@ -46,24 +45,34 @@ class JMSInventory:
         return groups
 
     @staticmethod
-    def make_proxy_command(gateway, path_dir):
+    def get_gateway_ssh_settings(gateway):
+        platform = gateway.platform
+        try:
+            protocol = platform.protocols.get(name='ssh')
+        except platform.protocols.model.DoesNotExist:
+            return {}
+        return protocol.setting
+
+    def make_proxy_command(self, gateway, path_dir):
         proxy_command_list = [
             "ssh", "-o", "Port={}".format(gateway.port),
             "-o", "StrictHostKeyChecking=no",
-            "{}@{}".format(gateway.username, gateway.address),
-            "-W", "%h:%p", "-q",
+            f"{gateway.username}@{gateway.address}"
         ]
 
-        if gateway.password:
-            proxy_command_list.insert(
-                0, "sshpass -p {}".format(gateway.password)
-            )
-        if gateway.private_key:
-            proxy_command_list.append("-i {}".format(gateway.get_private_key_path(path_dir)))
+        setting = self.get_gateway_ssh_settings(gateway)
+        if setting.get('nc', False):
+            proxy_command_list.extend(["nc", "-w", "10", "%h", "%p"])
+        else:
+            proxy_command_list.extend(["-W", "%h:%p", "-q"])
 
-        proxy_command = "-o ProxyCommand='{}'".format(
-            " ".join(proxy_command_list)
-        )
+        if gateway.password:
+            proxy_command_list.insert(0, f"sshpass -p {gateway.password}")
+
+        if gateway.private_key:
+            proxy_command_list.append(f"-i {gateway.get_private_key_path(path_dir)}")
+
+        proxy_command = f"-o ProxyCommand='{' '.join(proxy_command_list)}'"
         return {"ansible_ssh_common_args": proxy_command}
 
     @staticmethod
@@ -84,11 +93,11 @@ class JMSInventory:
     def make_custom_become_ansible_vars(account, su_from_auth, path_dir):
         su_method = su_from_auth['ansible_become_method']
         var = {
-            'custom_become': True,
-            'custom_become_method': su_method,
-            'custom_become_user': account.su_from.username,
-            'custom_become_password': account.escape_jinja2_syntax(account.su_from.secret),
-            'custom_become_private_key_path': account.su_from.get_private_key_path(path_dir)
+            'jms_custom_become': True,
+            'jms_custom_become_method': su_method,
+            'jms_custom_become_user': account.su_from.username,
+            'jms_custom_become_password': account.escape_jinja2_syntax(account.su_from.secret),
+            'jms_custom_become_private_key_path': account.su_from.get_private_key_path(path_dir)
         }
         return var
 
@@ -132,7 +141,7 @@ class JMSInventory:
         if gateway:
             ansible_connection = host.get('ansible_connection', 'ssh')
             if ansible_connection in ('local', 'winrm', 'rdp'):
-                host['gateway'] = {
+                host['jms_gateway'] = {
                     'address': gateway.address, 'port': gateway.port,
                     'username': gateway.username, 'secret': gateway.password,
                     'private_key_path': gateway.get_private_key_path(path_dir)
@@ -188,6 +197,7 @@ class JMSInventory:
                 'protocol': protocol.name, 'port': protocol.port,
                 'spec_info': asset.spec_info, 'secret_info': secret_info,
                 'protocols': [{'name': p.name, 'port': p.port} for p in protocols],
+                'origin_address': asset.address
             },
             'jms_account': {
                 'id': str(account.id), 'username': account.username,

@@ -29,6 +29,7 @@ from ops.ansible.exception import CommandInBlackListException
 from ops.mixin import PeriodTaskModelMixin
 from ops.variables import *
 from ops.const import Types, RunasPolicies, JobStatus, JobModules
+from ops.utils import merge_nodes_and_assets
 from orgs.mixins.models import JMSOrgBaseModel
 from perms.models import AssetPermission
 from perms.utils import UserPermAssetUtil
@@ -50,11 +51,13 @@ def get_parent_keys(key, include_self=True):
 class JMSPermedInventory(JMSInventory):
     def __init__(self,
                  assets,
+                 nodes,
                  account_policy='privileged_first',
                  account_prefer='root,Administrator',
                  module=None,
                  host_callback=None,
                  user=None):
+        assets = merge_nodes_and_assets(list(nodes), list(assets), user)
         super().__init__(assets, account_policy, account_prefer, host_callback, exclude_localhost=True)
         self.user = user
         self.module = module
@@ -144,17 +147,19 @@ class Job(JMSOrgBaseModel, PeriodTaskModelMixin):
     args = models.CharField(max_length=8192, default='', verbose_name=_('Args'), null=True, blank=True)
     module = models.CharField(max_length=128, choices=JobModules.choices, default=JobModules.shell,
                               verbose_name=_('Module'), null=True)
-    chdir = models.CharField(default="", max_length=1024, verbose_name=_('Chdir'), null=True, blank=True)
+    chdir = models.CharField(default="", max_length=1024, verbose_name=_('Run dir'), null=True, blank=True)
     timeout = models.IntegerField(default=-1, verbose_name=_('Timeout (Seconds)'))
     playbook = models.ForeignKey('ops.Playbook', verbose_name=_("Playbook"), null=True, on_delete=models.SET_NULL)
     type = models.CharField(max_length=128, choices=Types.choices, default=Types.adhoc, verbose_name=_("Type"))
     creator = models.ForeignKey('users.User', verbose_name=_("Creator"), on_delete=models.SET_NULL, null=True)
-    assets = models.ManyToManyField('assets.Asset', verbose_name=_("Assets"))
+    assets = models.ManyToManyField('assets.Asset', blank=True, verbose_name=_("Assets"))
+    nodes = models.ManyToManyField('assets.Node', blank=True, verbose_name=_("Node"))
     use_parameter_define = models.BooleanField(default=False, verbose_name=(_('Use Parameter Define')))
     parameters_define = models.JSONField(default=dict, verbose_name=_('Parameters define'))
-    runas = models.CharField(max_length=128, default='root', verbose_name=_('Runas'))
+    periodic_variable = models.JSONField(default=dict, verbose_name=_('Periodic variable'))
+    runas = models.CharField(max_length=128, default='root', verbose_name=_('Run as'))
     runas_policy = models.CharField(max_length=128, choices=RunasPolicies.choices, default=RunasPolicies.skip,
-                                    verbose_name=_('Runas policy'))
+                                    verbose_name=_('Run as policy'))
     comment = models.CharField(max_length=1024, default='', verbose_name=_('Comment'), null=True, blank=True)
     version = models.IntegerField(default=0)
     history = HistoricalRecords()
@@ -176,22 +181,14 @@ class Job(JMSOrgBaseModel, PeriodTaskModelMixin):
     @property
     def summary(self):
         summary = {
-            "total": 0,
-            "success": 0,
+            "total": self.executions.count(),
+            "success": self.executions.filter(status=JobStatus.success).count(),
         }
-        for execution in self.executions.all():
-            summary["total"] += 1
-            if execution.is_success:
-                summary["success"] += 1
         return summary
 
     @property
     def average_time_cost(self):
-        total_cost = 0
-        finished_count = self.executions.filter(status__in=['success', 'failed']).count()
-        for execution in self.executions.filter(status__in=['success', 'failed']).all():
-            total_cost += execution.time_cost
-        return total_cost / finished_count if finished_count else 0
+        return self.last_execution.time_cost if self.last_execution else 0
 
     def get_register_task(self):
         from ..tasks import run_ops_job
@@ -203,7 +200,7 @@ class Job(JMSOrgBaseModel, PeriodTaskModelMixin):
 
     @property
     def inventory(self):
-        return JMSPermedInventory(self.assets.all(),
+        return JMSPermedInventory(self.assets.all(), self.nodes.all(),
                                   self.runas_policy, self.runas,
                                   user=self.creator, module=self.module)
 
@@ -215,11 +212,12 @@ class Job(JMSOrgBaseModel, PeriodTaskModelMixin):
             return "{}:{}:{}".format(self.org.name, self.creator.name, self.playbook.name)
 
     def create_execution(self):
-        return self.executions.create(job_version=self.version, material=self.material, job_type=Types[self.type].value)
+        return self.executions.create(job_version=self.version, material=self.material, job_type=Types[self.type].value,
+                                      creator=self.creator)
 
     class Meta:
         verbose_name = _("Job")
-        unique_together = [('name', 'org_id', 'creator')]
+        unique_together = [('name', 'org_id', 'creator', 'type')]
         ordering = ['date_created']
 
 
@@ -246,6 +244,8 @@ class JobExecution(JMSOrgBaseModel):
                                 verbose_name=_("Material Type"))
 
     # clean up zombie execution
+    def get_status_display(self):
+        return dict(JobStatus.choices).get(self.status, self.status)
 
     @classmethod
     def clean_unexpected_execution(cls):
@@ -325,7 +325,7 @@ class JobExecution(JMSOrgBaseModel):
         if isinstance(self.parameters, str):
             extra_vars = json.loads(self.parameters)
         else:
-            extra_vars = {}
+            extra_vars = self.parameters if self.parameters else {}
         static_variables = self.gather_static_variables()
         extra_vars.update(static_variables)
 
@@ -346,7 +346,8 @@ class JobExecution(JMSOrgBaseModel):
             runner = PlaybookRunner(
                 self.inventory_path,
                 self.current_job.playbook.entry,
-                self.private_dir
+                self.private_dir,
+                extra_vars=extra_vars,
             )
         elif self.current_job.type == Types.upload_file:
             job_id = self.current_job.id
@@ -419,6 +420,7 @@ class JobExecution(JMSOrgBaseModel):
             this.result.update(cb.result)
         else:
             this.result = cb.result
+        this.result = json.loads(json.dumps(this.result).replace('\\u0000', ''))
         this.finish_task()
 
     def finish_task(self):
@@ -477,6 +479,16 @@ class JobExecution(JMSOrgBaseModel):
             for acl in acls:
                 if self.match_command_group(acl, asset):
                     break
+        command = self.current_job.args
+        if command and set(command.split()).intersection(set(settings.SECURITY_COMMAND_BLACKLIST)):
+            CommandExecutionAlert({
+                "assets": self.current_job.assets.all(),
+                "input": self.material,
+                "risk_level": RiskLevelChoices.reject,
+                "user": self.creator,
+            }).publish_async()
+            raise CommandInBlackListException(
+                "Command is rejected by black list: {}".format(self.current_job.args))
 
     def check_danger_keywords(self):
         lines = self.job.playbook.check_dangerous_keywords()

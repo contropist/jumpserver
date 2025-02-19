@@ -7,7 +7,7 @@ from audits.backends.db import OperateLogStore
 from common.serializers.fields import LabeledChoiceField, ObjectRelatedField
 from common.utils import reverse, i18n_trans
 from common.utils.timezone import as_current_tz
-from ops.serializers.job import JobExecutionSerializer
+from ops.serializers.job import JobExecutionSerializer, JobSerializer
 from orgs.mixins.serializers import BulkOrgResourceModelSerializer
 from terminal.models import Session
 from users.models import User
@@ -32,6 +32,30 @@ class JobLogSerializer(JobExecutionSerializer):
         extra_kwargs = {
             "creator_name": {"label": _("Creator")},
         }
+
+
+class JobsAuditSerializer(JobSerializer):
+    material = serializers.ReadOnlyField(label=_("Command"))
+    summary = serializers.ReadOnlyField(label=_("Summary"))
+    crontab = serializers.ReadOnlyField(label=_("Execution cycle"))
+    is_periodic_display = serializers.BooleanField(read_only=True, source='is_periodic')
+
+    class Meta(JobSerializer.Meta):
+        read_only_fields = [
+            "id", 'name', 'args', 'material', 'type', 'crontab', 'interval', 'date_last_run', 'summary', 'created_by',
+            'is_periodic_display'
+        ]
+        fields = read_only_fields + ['is_periodic']
+
+    def validate(self, attrs):
+        allowed_fields = {'is_periodic'}
+        submitted_fields = set(attrs.keys())
+        invalid_fields = submitted_fields - allowed_fields
+        if invalid_fields:
+            raise serializers.ValidationError(
+                f"Updating  {', '.join(invalid_fields)} fields is not allowed"
+            )
+        return attrs
 
 
 class FTPLogSerializer(serializers.ModelSerializer):
@@ -67,7 +91,7 @@ class UserLoginLogSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             "user_agent": {"label": _("User agent")},
             "reason_display": {"label": _("Reason display")},
-            "backend_display": {"label": _("Authentication backend")},
+            "backend_display": {"label": _("Auth backend display")},
         }
 
 
@@ -131,7 +155,7 @@ class ActivityUnionLogSerializer(serializers.Serializer):
     def get_content(obj):
         if not obj['r_detail']:
             action = obj['r_action'].replace('_', ' ').capitalize()
-            ctn = _('User %s %s this resource') % (obj['r_user'], _(action))
+            ctn = _('%s %s this resource') % (obj['r_user'], _(action).lower())
         else:
             ctn = i18n_trans(obj['r_detail'])
         return ctn
@@ -181,7 +205,7 @@ class UserSessionSerializer(serializers.ModelSerializer):
         ]
         fields = fields_small
         extra_kwargs = {
-            "backend_display": {"label": _("Authentication backend")},
+            "backend_display": {"label": _("Auth backend display")},
         }
 
     def get_is_current_user_session(self, obj):

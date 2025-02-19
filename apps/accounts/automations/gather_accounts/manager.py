@@ -51,8 +51,16 @@ class GatherAccountsManager(AccountBasePlaybookManager):
         data = self.generate_data(asset, result)
         self.asset_account_info[asset] = data
 
+    @staticmethod
+    def get_nested_info(data, *keys):
+        for key in keys:
+            data = data.get(key, {})
+            if not data:
+                break
+        return data
+
     def on_host_success(self, host, result):
-        info = result.get('debug', {}).get('res', {}).get('info', {})
+        info = self.get_nested_info(result, 'debug', 'res', 'info')
         asset = self.host_asset_mapper.get(host)
         if asset and info:
             result = self.filter_success_result(asset.type, info)
@@ -87,12 +95,14 @@ class GatherAccountsManager(AccountBasePlaybookManager):
             return None, None
 
         users = User.objects.filter(id__in=recipients)
-        if not users:
+        if not users.exists():
             return users, None
 
         asset_ids = self.asset_username_mapper.keys()
-        assets = Asset.objects.filter(id__in=asset_ids)
+
+        assets = Asset.objects.filter(id__in=asset_ids).prefetch_related('accounts')
         gather_accounts = GatheredAccount.objects.filter(asset_id__in=asset_ids, present=True)
+
         asset_id_map = {str(asset.id): asset for asset in assets}
         asset_id_username = list(assets.values_list('id', 'accounts__username'))
         asset_id_username.extend(list(gather_accounts.values_list('asset_id', 'username')))
@@ -101,26 +111,24 @@ class GatherAccountsManager(AccountBasePlaybookManager):
         for asset_id, username in asset_id_username:
             system_asset_username_mapper[str(asset_id)].add(username)
 
-        change_info = {}
+        change_info = defaultdict(dict)
         for asset_id, usernames in self.asset_username_mapper.items():
             system_usernames = system_asset_username_mapper.get(asset_id)
-
             if not system_usernames:
                 continue
 
             add_usernames = usernames - system_usernames
             remove_usernames = system_usernames - usernames
-            k = f'{asset_id_map[asset_id]}[{asset_id}]'
 
             if not add_usernames and not remove_usernames:
                 continue
 
-            change_info[k] = {
-                'add_usernames': ', '.join(add_usernames),
-                'remove_usernames': ', '.join(remove_usernames),
+            change_info[str(asset_id_map[asset_id])] = {
+                'add_usernames': add_usernames,
+                'remove_usernames': remove_usernames
             }
 
-        return users, change_info
+        return users, dict(change_info)
 
     @staticmethod
     def send_email_if_need(users, change_info):

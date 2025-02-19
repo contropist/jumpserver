@@ -1,4 +1,6 @@
 #!/bin/bash
+
+# 不能删掉 cleanup 会产生僵尸进程
 function cleanup()
 {
     local pids=`jobs -p`
@@ -19,8 +21,7 @@ if [[ "$action" == "bash" || "$action" == "sh" ]];then
 elif [[ "$action" == "sleep" ]];then
     echo "Sleep 365 days"
     sleep 365d
-elif [[ "$service" == "receptor" ]];then
-    python receptor "$action"
 else
-    python jms "$action" "$service"
+    which cron &>/dev/null && [[ ! -f /var/run/crond.pid ]] && cron || echo ""
+    python jms "${action}" "${service}"
 fi

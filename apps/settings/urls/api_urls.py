@@ -19,7 +19,7 @@ urlpatterns = [
     path('slack/testing/', api.SlackTestingAPI.as_view(), name='slack-testing'),
     path('sms/<str:backend>/testing/', api.SMSTestingAPI.as_view(), name='sms-testing'),
     path('sms/backend/', api.SMSBackendAPI.as_view(), name='sms-backend'),
-    path('vault/testing/', api.VaultTestingAPI.as_view(), name='vault-testing'),
+    path('vault/<str:backend>/testing/', api.VaultTestingAPI.as_view(), name='vault-testing'),
     path('chatai/testing/', api.ChatAITestingAPI.as_view(), name='chatai-testing'),
     path('vault/sync/', api.VaultSyncDataAPI.as_view(), name='vault-sync'),
     path('security/block-ip/', api.BlockIPSecurityAPI.as_view(), name='block-ip'),
@@ -30,6 +30,7 @@ urlpatterns = [
     path('public/', api.PublicSettingApi.as_view(), name='public-setting'),
     path('public/open/', api.OpenPublicSettingApi.as_view(), name='open-public-setting'),
     path('server-info/', api.ServerInfoApi.as_view(), name='server-info'),
+    path('i18n/<str:name>/', api.ComponentI18nApi.as_view(), name='i18n-data'),
 ]
 
 urlpatterns += router.urls

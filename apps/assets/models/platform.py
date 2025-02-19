@@ -1,7 +1,7 @@
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
-from assets.const import AllTypes, Category, Protocol
+from assets.const import AllTypes, Category, Protocol, SuMethodChoices
 from common.db.fields import JsonDictTextField
 from common.db.models import JMSBaseModel
 
@@ -101,7 +101,7 @@ class Platform(LabeledMixin, JMSBaseModel):
         default=CharsetChoices.utf8, choices=CharsetChoices.choices,
         max_length=8, verbose_name=_("Charset")
     )
-    domain_enabled = models.BooleanField(default=True, verbose_name=_("Domain enabled"))
+    domain_enabled = models.BooleanField(default=True, verbose_name=_("Gateway enabled"))
     # 账号有关的
     su_enabled = models.BooleanField(default=False, verbose_name=_("Su enabled"))
     su_method = models.CharField(max_length=32, blank=True, null=True, verbose_name=_("Su method"))
@@ -110,6 +110,10 @@ class Platform(LabeledMixin, JMSBaseModel):
     @property
     def type_constraints(self):
         return AllTypes.get_constraints(self.category, self.type)
+
+    @lazyproperty
+    def assets_amount(self):
+        return self.assets.count()
 
     @classmethod
     def default(cls):
@@ -126,6 +130,17 @@ class Platform(LabeledMixin, JMSBaseModel):
         if '华为' in self.name:
             return True
         return False
+
+    @property
+    def ansible_become_method(self):
+        su_method = self.su_method or SuMethodChoices.sudo
+        if su_method in [SuMethodChoices.sudo, SuMethodChoices.only_sudo]:
+            method = SuMethodChoices.sudo
+        elif su_method in [SuMethodChoices.su, SuMethodChoices.only_su]:
+            method = SuMethodChoices.su
+        else:
+            method = su_method
+        return method
 
     def __str__(self):
         return self.name
